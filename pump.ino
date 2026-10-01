@@ -6,12 +6,12 @@
 #define REF_BIT     PB1
 #define COMP_BIT PB0   // baca output LM393 (HIGH = sensor > referensi)
 #define PWM_BIT  PB2   // OC0A -> RC filter -> LM393 IN1-
-
+#define POT_BIT PB1   // baca OUT2 LM393 (trimpot vs referensi RC yang sama)
 
 
 
 // ---- LED bar (level 1..8) ----
-#define LED1_BIT PD0
+#define LED1_BIT PD6
 #define LED2_BIT PD1
 #define LED3_BIT PD2
 #define LED4_BIT PB3
@@ -21,7 +21,7 @@
 #define LED8_BIT PB7
 
 // ---- Pompa / relay ----
-#define PUMP_BIT PD6
+#define PUMP_BIT PD5
 #define RELAY_ACTIVE_HIGH 1   // ganti 0 kalau modul relay-nya active-LOW
 
 #define PUMP_ON_LEVEL  4   // sesuai spek: 4 LED nyala -> pompa ON
@@ -46,17 +46,37 @@ void softadc_init(void) {
     // ACSR tidak dipakai lagi, hapus baris itu
 }
 
-uint8_t softadc_read(void) {
+// uint8_t softadc_read(void) {
+//     uint8_t result = 0;
+//     for (int8_t bit = 7; bit >= 0; bit--) {
+//         uint8_t test = result | (1 << bit);
+//         OCR0A = test;
+//         _delay_ms(5);
+//         if (PINB & (1<<COMP_BIT))   // LM393 output HIGH -> sensor > referensi
+//             result = test;
+//     }
+//     return result;
+// }
+
+// generalisasi softadc_read supaya bisa dipakai utk kedua channel
+uint8_t softadc_read_generic(volatile uint8_t *pin_reg, uint8_t bitmask) {
     uint8_t result = 0;
     for (int8_t bit = 7; bit >= 0; bit--) {
         uint8_t test = result | (1 << bit);
         OCR0A = test;
         _delay_ms(5);
-        if (PINB & (1<<COMP_BIT))   // LM393 output HIGH -> sensor > referensi
+        if (*pin_reg & bitmask)
             result = test;
     }
     return result;
 }
+
+
+
+
+
+
+
 
 uint8_t value_to_level(uint8_t v) {
     uint8_t level = (v >> 5) + 1;      // 0..255 -> 1..8
@@ -76,6 +96,22 @@ void show_level(uint8_t level) {
     if (level>=8) PORTB |= (1<<LED8_BIT); else PORTB &= ~(1<<LED8_BIT);
 }
 
+void show_level_blink(uint8_t level) {
+    PORTD &= ~((1<<LED2_BIT)|(1<<LED3_BIT));
+    PORTB &= ~((1<<LED4_BIT)|(1<<LED5_BIT)|(1<<LED6_BIT)|(1<<LED7_BIT)|(1<<LED8_BIT));
+
+    uint8_t cycles = level;
+    uint16_t half_period = 500 / cycles;
+    if (half_period < 20) half_period = 20;
+
+    for (uint8_t i = 0; i < cycles; i++) {
+        PORTD |= (1<<LED1_BIT);
+        for (uint16_t t = 0; t < half_period; t++) _delay_ms(1);
+        PORTD &= ~(1<<LED1_BIT);
+        for (uint16_t t = 0; t < half_period; t++) _delay_ms(1);
+    }
+}
+
 int main(void) {
     DDRD |= (1<<LED1_BIT)|(1<<LED2_BIT)|(1<<LED3_BIT)|(1<<PUMP_BIT);
     DDRB |= (1<<LED4_BIT)|(1<<LED5_BIT)|(1<<LED6_BIT)|(1<<LED7_BIT)|(1<<LED8_BIT);
@@ -85,13 +121,27 @@ int main(void) {
 
     uint8_t pump_on = 0;
     while (1) {
-        uint8_t level = value_to_level(softadc_read());
-        show_level(level);
+        // uint8_t level = value_to_level(softadc_read());
+        uint8_t level   = value_to_level(softadc_read_generic(&PINB, (1<<COMP_BIT)));
+        uint8_t pot_raw = softadc_read_generic(&PINB, (1<<POT_BIT));
 
-        if (!pump_on && level >= PUMP_ON_LEVEL)  pump_on = 1;
-        if ( pump_on && level <= PUMP_OFF_LEVEL) pump_on = 0;
+        uint8_t pump_on_level  = value_to_level(pot_raw);                         // diatur trimpot, real-time
+        uint8_t pump_off_level = (pump_on_level > 1) ? pump_on_level - 1 : 1;      // hysteresis otomatis, 1 level di bawahnya
+
+
+
+        // show_level(level);
+        show_level_blink(level);   
+
+        // if (!pump_on && level >= PUMP_ON_LEVEL)  pump_on = 1;
+        // if ( pump_on && level <= PUMP_OFF_LEVEL) pump_on = 0;
+        if (!pump_on && level >= pump_on_level)  pump_on = 1;
+        if ( pump_on && level <= pump_off_level) pump_on = 0;
         relay_write(pump_on);
 
-        _delay_ms(1000);
+
+        relay_write(pump_on);
+
+        // _delay_ms(1000);
     }
 }
